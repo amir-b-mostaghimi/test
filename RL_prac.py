@@ -74,7 +74,7 @@ for episode in range(1000):
         policy_loss.append(-log_prob * R)
         entropy_loss.append(-entropy)  # Encourage exploration
     
-    optimizer.zero_grad()
+    optimizer.zero_grad() # reset the optimizer
     policy_loss = torch.stack(policy_loss).sum()
     entropy_loss = torch.stack(entropy_loss).sum()
     loss = policy_loss + eps * entropy_loss  # Add entropy bonus
