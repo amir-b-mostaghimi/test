@@ -103,7 +103,7 @@ for episode in range(1000):
             state_tensor = torch.FloatTensor(state).unsqueeze(0)
             with torch.no_grad():
                 action_probs = policy(state_tensor)
-            action = torch.argmax(action_probs, dim=1).item()  # Greedy action: The action with the highest probability
+            action = torch.argmax(action_probs, dim=1).item()  # Greedy action: The action
             state, reward, terminated, truncated, _ = test_env.step(action)
             done = terminated or truncated
             test_reward += reward
