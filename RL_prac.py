@@ -144,5 +144,6 @@ def evaluate_agent(agent, env):
     env.close()
     return total_reward
 
+# Run baby run
 if __name__ == "__main__":
     agent = train_agent()
