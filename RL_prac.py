@@ -1,113 +1,148 @@
-import gym
+import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.distributions import Categorical
+from collections import deque
+import random
 
-# Neural Network for Policy
-class Policy(nn.Module):
-    def __init__(self):
-        super(Policy, self).__init__()
-        self.fc1 = nn.Linear(4, 128) 
-        self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(128, 64)
-        self.fc3 = nn.Linear(64, 2)  
+class DQNAgent:
+    def __init__(self, state_size, action_size, hidden_size=128, learning_rate=0.001,
+                 gamma=0.99, epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995,
+                 memory_size=10000, batch_size=64):
+        self.state_size = state_size
+        self.action_size = action_size
+        self.hidden_size = hidden_size
+        self.learning_rate = learning_rate
+        self.gamma = gamma
+        self.epsilon = epsilon_start
+        self.epsilon_end = epsilon_end
+        self.epsilon_decay = epsilon_decay
+        self.batch_size = batch_size
         
-    def forward(self, x):
-        x = self.fc1(x)
-        x = self.relu(x)
-        x = self.fc2(x)
-        x = self.relu(x)
-        x = self.fc3(x)
-        return torch.softmax(x, dim=1)
+        # Initialize policy network
+        self.policy_net = self._build_network()
+        self.target_net = self._build_network()
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=learning_rate)
+        self.memory = deque(maxlen=memory_size)
+        self.criterion = nn.MSELoss()
+    
+    def _build_network(self):
+        return nn.Sequential(
+            nn.Linear(self.state_size, self.hidden_size),
+            nn.ReLU(),
+            nn.Linear(self.hidden_size, self.hidden_size),
+            nn.ReLU(),
+            nn.Linear(self.hidden_size, self.action_size)
+        )
+    
+    def remember(self, state, action, reward, next_state, done):
+        self.memory.append((state, action, reward, next_state, done))
+    
+    def act(self, state, training=True):
+        if training and random.random() < self.epsilon:
+            return random.randrange(self.action_size)
+        
+        with torch.no_grad():
+            state = torch.FloatTensor(state).unsqueeze(0)
+            q_values = self.policy_net(state)
+            return q_values.argmax().item()
+    
+    def replay(self):
+        if len(self.memory) < self.batch_size:
+            return
+        
+        batch = random.sample(self.memory, self.batch_size)
+        states, actions, rewards, next_states, dones = zip(*batch)
+        
+        states = torch.FloatTensor(states)
+        actions = torch.LongTensor(actions)
+        rewards = torch.FloatTensor(rewards)
+        next_states = torch.FloatTensor(next_states)
+        dones = torch.FloatTensor(dones)
+        
+        # Compute current Q values
+        current_q_values = self.policy_net(states).gather(1, actions.unsqueeze(1))
+        
+        # Compute next Q values using target network
+        with torch.no_grad():
+            next_q_values = self.target_net(next_states).max(1)[0]
+            target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
+        
+        # Compute loss and update
+        loss = self.criterion(current_q_values.squeeze(), target_q_values)
+        self.optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 1.0)
+        self.optimizer.step()
+        
+        # Update epsilon
+        self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
+        
+        return loss.item()
+    
+    def update_target_network(self):
+        self.target_net.load_state_dict(self.policy_net.state_dict())
 
-# Training setup
-env = gym.make('CartPole-v1')  # Remove render_mode for faster training
-policy = Policy()
-optimizer = optim.Adam(policy.parameters(), lr=0.001)  # Lower learning rate
-gamma = 0.99  # Discount factor
-eps = 0.1  # Exploration rate for entropy bonus
+def train_agent(env_name='CartPole-v1', episodes=1000, target_update=10):
+    env = gym.make(env_name)
+    state_size = env.observation_space.shape[0]
+    action_size = env.action_space.n
+    
+    agent = DQNAgent(state_size, action_size)
+    max_reward = 0
+    
+    for episode in range(episodes):
+        state = env.reset()[0]
+        total_reward = 0
+        done = False
+        
+        while not done:
+            action = agent.act(state)
+            next_state, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
+            
+            agent.remember(state, action, reward, next_state, done)
+            loss = agent.replay()
+            
+            total_reward += reward
+            state = next_state
+            
+        # Update target network periodically
+        if episode % target_update == 0:
+            agent.update_target_network()
+        
+        # Track progress
+        max_reward = max(max_reward, total_reward)
+        
+        if episode % 10 == 0:
+            print(f"Episode {episode}, Total Reward: {total_reward}, Max Reward: {max_reward}, Epsilon: {agent.epsilon:.3f}")
+        
+        # Render best episodes
+        if total_reward >= max_reward and total_reward > 100:
+            print(f"New best episode with reward {total_reward}!")
+            test_env = gym.make(env_name, render_mode='human')
+            test_reward = evaluate_agent(agent, test_env)
+            print(f"Test episode finished with reward {test_reward}")
+    
+    env.close()
+    return agent
 
-# Training loop
-max_reward = 0
-for episode in range(1000):
+def evaluate_agent(agent, env):
     state = env.reset()[0]
-    log_probs = []
-    rewards = []
-    entropies = []
+    total_reward = 0
     done = False
     
-    # Collect trajectory
     while not done:
-        state_tensor = torch.FloatTensor(state).unsqueeze(0)
-        action_probs = policy(state_tensor)
-        dist = Categorical(action_probs)
-        action = dist.sample()
-        log_prob = dist.log_prob(action)
-        entropy = dist.entropy()  # Add entropy for exploration
-        
-        next_state, reward, terminated, truncated, _ = env.step(action.item())
+        action = agent.act(state, training=False)
+        state, reward, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
-        
-        log_probs.append(log_prob)
-        rewards.append(reward)
-        entropies.append(entropy)
-        state = next_state
+        total_reward += reward
     
-    # Calculate discounted rewards
-    returns = []
-    R = 0
-    for r in reversed(rewards):
-        R = r + gamma * R
-        returns.insert(0, R)
-    returns = torch.tensor(returns)
-    
-    # Normalize returns for stability
-    if len(returns) > 1:  # Only normalize if we have enough samples
-        returns = (returns - returns.mean()) / (returns.std() + 1e-9)
-    
-    # Calculate loss and update policy
-    policy_loss = []
-    entropy_loss = []
-    for log_prob, R, entropy in zip(log_probs, returns, entropies):
-        policy_loss.append(-log_prob * R)
-        entropy_loss.append(-entropy)  # Encourage exploration
-    
-    optimizer.zero_grad() # reset the optimizer
-    policy_loss = torch.stack(policy_loss).sum()
-    entropy_loss = torch.stack(entropy_loss).sum()
-    loss = policy_loss + eps * entropy_loss  # Add entropy bonus
-    loss.backward()
-    
-    # Gradient clipping to prevent too large updates
-    torch.nn.utils.clip_grad_norm_(policy.parameters(), 0.5)
-    optimizer.step()
-    
-    # Track progress
-    total_reward = sum(rewards)
-    max_reward = max(max_reward, total_reward)
-    
-    if episode % 10 == 0:
-        print(f"Episode {episode}, Total Reward: {total_reward}, Max Reward: {max_reward}")
-    
-    # Render best episodes
-    if total_reward >= max_reward and total_reward > 100:
-        print(f"New best episode with reward {total_reward}!")
-        # Render a test episode with the current policy
-        test_env = gym.make('CartPole-v1', render_mode='human')
-        state = test_env.reset()[0]
-        done = False
-        test_reward = 0
-        while not done:
-            state_tensor = torch.FloatTensor(state).unsqueeze(0)
-            with torch.no_grad():
-                action_probs = policy(state_tensor)
-            action = torch.argmax(action_probs, dim=1).item()  # Greedy action: The action
-            state, reward, terminated, truncated, _ = test_env.step(action)
-            done = terminated or truncated
-            test_reward += reward
-        test_env.close()
-        print(f"Test episode finished with reward {test_reward}")
+    env.close()
+    return total_reward
 
-env.close()
+if __name__ == "__main__":
+    agent = train_agent()
