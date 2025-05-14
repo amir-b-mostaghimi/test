@@ -99,7 +99,7 @@ def train_agent(env_name='MountainCar-v0', episodes=2000, target_update=5):
         os.makedirs(videos_dir)
     
     agent = DQNAgent(state_size, action_size)
-    max_reward = 0
+    max_reward = -100
     
     for episode in range(episodes):
         state = env.reset()[0]
@@ -117,7 +117,7 @@ def train_agent(env_name='MountainCar-v0', episodes=2000, target_update=5):
             agent.remember(state, action, modified_reward, next_state, done)
             loss = agent.replay()
             
-            total_reward += reward  # Track original reward for logging
+            total_reward += modified_reward  # Track original reward for logging
             state = next_state
             
         # Update target network periodically
@@ -131,7 +131,7 @@ def train_agent(env_name='MountainCar-v0', episodes=2000, target_update=5):
             print(f"Episode {episode}, Total Reward: {total_reward}, Max Reward: {max_reward}, Epsilon: {agent.epsilon:.3f}")
         
         # Record best episodes
-        if total_reward >= max_reward and total_reward > 100:
+        if total_reward >= max_reward and total_reward > -100:
             print(f"New best episode with reward {total_reward}! Recording video...")
             video_env = gym.make(env_name, render_mode='rgb_array')
             video_env = RecordVideo(
